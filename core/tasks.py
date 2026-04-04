@@ -43,8 +43,9 @@ async def scroll_and_select_user(page, username, targets):
     target_selector = 'xpath=//*[@id="sub-app"]/div/div[1]/div[2]/div[2]//div[contains(@class, "semi-list-item-body semi-list-item-body-flex-start")]'
     scrollable_friends_selector = 'xpath=//*[@id="sub-app"]/div/div[1]/div[2]/div[2]/div/div/div[3]/div/div/div/ul/div'
     
-    # [修改] 更加精确的状态选择器
-    no_more_selector = 'xpath=//div[contains(@class, "no-more-tip-ftdJnu")]'
+    # [修复] 使用模糊匹配 no-more-tip- 前缀，不再依赖精确哈希后缀
+    # 同时增加文本匹配作为兜底
+    no_more_selector = 'xpath=//div[contains(@class, "no-more-tip-")]'
     loading_selector = 'xpath=//div[contains(@class, "semi-spin")]'
 
     logger.debug(f"账号 {username} 开始查找目标好友列表")
@@ -70,9 +71,16 @@ async def scroll_and_select_user(page, username, targets):
     # [修改] 复制一份目标列表用于追踪进度
     remaining_targets = set(targets)
 
+    # [修复] 新增：连续空滚动计数器（滚动后没有发现新好友的次数）
+    empty_scroll_count = 0
+    MAX_EMPTY_SCROLLS = 10  # 连续10次滚动没有新好友，认为到底了
+
     while True:
         # 查找所有目标元素
         target_elements = await page.locator(target_selector).all()
+
+        # [修复] 记录本轮循环前已发现的好友数，用于判断是否有新发现
+        prev_found_count = len(found_usernames)
 
         for element in target_elements:
             try:
@@ -105,32 +113,63 @@ async def scroll_and_select_user(page, username, targets):
             except Exception as e:
                 traceback.print_exc()
         else:
-            # [修改] 状态检测逻辑
+            # [修复] 检查本轮是否有新好友被发现
+            new_found = len(found_usernames) > prev_found_count
+            if new_found:
+                empty_scroll_count = 0  # 有新发现，重置计数器
+            else:
+                empty_scroll_count += 1  # 无新发现，递增计数器
+
+            # [修复] 状态检测逻辑（多重兜底）
             
-            # 1. 检查是否到底（没有更多了）
+            # 1. 检查是否到底（"没有更多了" —— 使用模糊类名匹配）
             if await page.locator(no_more_selector).count() > 0:
                 logger.info(f"账号 {username} 检测到'没有更多了'标志，已到达底部")
                 if len(remaining_targets) > 0:
                     logger.warning(f"账号 {username} 搜索结束，仍有以下好友未找到: {remaining_targets}")
                 break
 
-            # 2. 检查是否正在加载
+            # 2. [修复] 检查连续空滚动次数，防止死循环
+            if empty_scroll_count >= MAX_EMPTY_SCROLLS:
+                logger.warning(f"账号 {username} 连续 {MAX_EMPTY_SCROLLS} 次滚动未发现新好友，判定已到达底部")
+                if len(remaining_targets) > 0:
+                    logger.warning(f"账号 {username} 搜索结束，仍有以下好友未找到: {remaining_targets}")
+                break
+
+            # 3. 检查是否正在加载
             if await page.locator(loading_selector).count() > 0:
                 logger.debug(f"账号 {username} 列表正在加载中 (Loading)...")
                 await asyncio.sleep(1.5) # 给加载留点时间
                 # 不 break，继续去滚动以触发后续内容
 
-            # 3. 滚动容器
+            # 4. 滚动容器
             scrollable_element = await page.locator(
                 scrollable_friends_selector
             ).element_handle()
             
             if scrollable_element:
-                # [修改] 加大滚动幅度
+                # [修复] 记录滚动前的 scrollTop，用于检测是否真的滚动了
+                scroll_top_before = await page.evaluate(
+                    "(element) => element.scrollTop", scrollable_element
+                )
+                
                 await page.evaluate(
                     "(element) => element.scrollTop += 800", scrollable_element
                 )
-                logger.debug(f"账号 {username} 滚动好友列表以加载更多好友")
+                
+                # [修复] 检测滚动后的 scrollTop
+                await asyncio.sleep(0.3)
+                scroll_top_after = await page.evaluate(
+                    "(element) => element.scrollTop", scrollable_element
+                )
+                
+                if scroll_top_before == scroll_top_after:
+                    # scrollTop 没有变化，说明已经到底了
+                    empty_scroll_count += 2  # 加速判定到底
+                    logger.debug(f"账号 {username} scrollTop 未变化 ({scroll_top_before})，可能已到底 (空滚动计数: {empty_scroll_count}/{MAX_EMPTY_SCROLLS})")
+                else:
+                    logger.debug(f"账号 {username} 滚动好友列表以加载更多好友 (scrollTop: {scroll_top_before} -> {scroll_top_after})")
+                
                 await asyncio.sleep(1.5)
             else:
                 logger.error(f"账号 {username} 未找到滚动容器，退出")
@@ -222,3 +261,4 @@ async def runTasks():
 
         # 关闭浏览器实例
         await browser.close()
+

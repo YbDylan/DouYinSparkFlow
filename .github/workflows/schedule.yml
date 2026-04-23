@@ -39,12 +39,6 @@ jobs:
       - name: Run DouYin Spark Flow
         run: python main.py
 
-      - uses: actions/upload-artifact@v6
-        if: ${{ !cancelled() }}
-        with:
-          name: run-logs
-          path: logs/
-
   workflow-keepalive:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest

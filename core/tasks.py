@@ -19,6 +19,20 @@ matchMode = config.get("matchMode", "nickname")
 userIDDict = {}
 
 
+def get_page_text_snapshot(page, max_len=2000):
+    """提取页面可见文本，便于直接从 Actions 日志判断当前页面类型"""
+    try:
+        text = page.locator("body").inner_text(timeout=5000)
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return "<body 文本为空>"
+        if len(text) > max_len:
+            return text[:max_len] + " ...<已截断>"
+        return text
+    except Exception as e:
+        return f"<获取 body 文本失败: {e}>"
+
+
 def save_debug_page(page, username, stage):
     """保存当前页面的调试信息，便于在 GitHub Actions 中排查问题"""
     try:
@@ -33,13 +47,20 @@ def save_debug_page(page, username, stage):
         with open(f"{prefix}.html", "w", encoding="utf-8") as f:
             f.write(page.content())
 
+        body_text = get_page_text_snapshot(page)
+
         with open(f"{prefix}.txt", "w", encoding="utf-8") as f:
             f.write(f"URL: {page.url}\n")
             try:
-                f.write(f"TITLE: {page.title()}\n")
+                title = page.title()
+                f.write(f"TITLE: {title}\n")
             except Exception as title_error:
-                f.write(f"TITLE: <获取失败: {title_error}>\n")
+                title = f"<获取失败: {title_error}>"
+                f.write(f"TITLE: {title}\n")
+            f.write(f"BODY_TEXT: {body_text}\n")
 
+        logger.info(f"账号 {username} 调试页面标题: {title}")
+        logger.info(f"账号 {username} 调试页面文本摘要: {body_text}")
         logger.info(f"账号 {username} 已保存调试页面: {prefix}.*")
     except Exception as e:
         logger.warning(f"账号 {username} 保存调试页面失败: {e}")
@@ -62,7 +83,6 @@ def handle_response(response: Response):
     只监听你要的那个接口响应
     """
     global userIDDict
-    # 精准匹配目标接口 URL
     if "aweme/v1/creator/im/user_detail/" in response.url:
         try:
             json_data = response.json()
@@ -118,6 +138,11 @@ def scroll_and_select_user(page, username, targets):
     logger.debug(f"账号 {username} 开始查找目标好友列表")
     logger.debug(f"账号 {username} 目标好友列表: {targets}")
     logger.info(f"账号 {username} 当前页面 URL: {page.url}")
+    try:
+        logger.info(f"账号 {username} 当前页面标题: {page.title()}")
+    except Exception as e:
+        logger.warning(f"账号 {username} 获取页面标题失败: {e}")
+    logger.info(f"账号 {username} 当前页面文本摘要: {get_page_text_snapshot(page)}")
 
     logger.debug(f"账号 {username} 点击进入好友标签页")
     try:
